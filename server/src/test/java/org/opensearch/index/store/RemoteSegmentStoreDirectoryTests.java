@@ -8,6 +8,8 @@
 
 package org.opensearch.index.store;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.index.CorruptIndexException;
 import org.apache.lucene.index.IndexFormatTooNewException;
@@ -58,9 +60,12 @@ import java.util.concurrent.TimeUnit;
 
 import org.mockito.Mockito;
 
+import static org.opensearch.index.store.RemoteSegmentStoreDirectory.METADATA_FILES_TO_FETCH;
+import static org.opensearch.index.store.RemoteSegmentStoreDirectory.MetadataFilenameUtils.SEPARATOR;
 import static org.opensearch.test.RemoteStoreTestUtils.createMetadataFileBytes;
 import static org.opensearch.test.RemoteStoreTestUtils.getDummyMetadata;
 import static org.hamcrest.CoreMatchers.is;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
@@ -73,6 +78,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
+    private static final Logger logger = LogManager.getLogger(RemoteSegmentStoreDirectoryTests.class);
     private RemoteDirectory remoteDataDirectory;
     private RemoteDirectory remoteMetadataDirectory;
     private RemoteStoreMetadataLockManager mdLockManager;
@@ -83,9 +89,39 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
     private SegmentInfos segmentInfos;
     private ThreadPool threadPool;
 
-    private final String metadataFilename = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(12, 23, 34, 1, 1);
-    private final String metadataFilename2 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(12, 13, 34, 1, 1);
-    private final String metadataFilename3 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(10, 38, 34, 1, 1);
+    private final String metadataFilename = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(
+        12,
+        23,
+        34,
+        1,
+        1,
+        "node-1"
+    );
+
+    private final String metadataFilenameDup = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(
+        12,
+        23,
+        34,
+        2,
+        1,
+        "node-2"
+    );
+    private final String metadataFilename2 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(
+        12,
+        13,
+        34,
+        1,
+        1,
+        "node-1"
+    );
+    private final String metadataFilename3 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(
+        10,
+        38,
+        34,
+        1,
+        1,
+        "node-1"
+    );
 
     @Before
     public void setup() throws IOException {
@@ -93,13 +129,6 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         remoteMetadataDirectory = mock(RemoteDirectory.class);
         mdLockManager = mock(RemoteStoreMetadataLockManager.class);
         threadPool = mock(ThreadPool.class);
-
-        remoteSegmentStoreDirectory = new RemoteSegmentStoreDirectory(
-            remoteDataDirectory,
-            remoteMetadataDirectory,
-            mdLockManager,
-            threadPool
-        );
         testUploadTracker = new TestUploadListener();
 
         Settings indexSettings = Settings.builder()
@@ -109,11 +138,19 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         ExecutorService executorService = OpenSearchExecutors.newDirectExecutorService();
 
         indexShard = newStartedShard(false, indexSettings, new NRTReplicationEngineFactory());
+        remoteSegmentStoreDirectory = new RemoteSegmentStoreDirectory(
+            remoteDataDirectory,
+            remoteMetadataDirectory,
+            mdLockManager,
+            threadPool,
+            indexShard.shardId()
+        );
         try (Store store = indexShard.store()) {
             segmentInfos = store.readLastCommittedSegmentsInfo();
         }
 
         when(threadPool.executor(ThreadPool.Names.REMOTE_PURGE)).thenReturn(executorService);
+        when(threadPool.executor(ThreadPool.Names.REMOTE_RECOVERY)).thenReturn(executorService);
     }
 
     @After
@@ -168,15 +205,13 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
     }
 
     public void testGetPrimaryTermGenerationUuid() {
-        String[] filenameTokens = "abc__9223372036854775795__9223372036854775784__uuid_xyz".split(
-            RemoteSegmentStoreDirectory.MetadataFilenameUtils.SEPARATOR
-        );
+        String[] filenameTokens = "abc__9223372036854775795__9223372036854775784__uuid_xyz".split(SEPARATOR);
         assertEquals(12, RemoteSegmentStoreDirectory.MetadataFilenameUtils.getPrimaryTerm(filenameTokens));
         assertEquals(23, RemoteSegmentStoreDirectory.MetadataFilenameUtils.getGeneration(filenameTokens));
     }
 
     public void testInitException() throws IOException {
-        when(remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX, 1)).thenThrow(
+        when(remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX, METADATA_FILES_TO_FETCH)).thenThrow(
             new IOException("Error")
         );
 
@@ -195,6 +230,13 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         assertEquals(Set.of(), actualCache.keySet());
     }
 
+    public void testInitMultipleMetadataFile() throws IOException {
+        when(remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX, METADATA_FILES_TO_FETCH)).thenReturn(
+            List.of(metadataFilename, metadataFilenameDup)
+        );
+        assertThrows(IllegalStateException.class, () -> remoteSegmentStoreDirectory.init());
+    }
+
     private Map<String, Map<String, String>> populateMetadata() throws IOException {
         List<String> metadataFiles = new ArrayList<>();
 
@@ -205,7 +247,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         when(
             remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(
                 RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX,
-                1
+                METADATA_FILES_TO_FETCH
             )
         ).thenReturn(List.of(metadataFilename));
         when(
@@ -255,7 +297,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         when(
             remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(
                 RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX,
-                1
+                METADATA_FILES_TO_FETCH
             )
         ).thenReturn(List.of(metadataFilename));
 
@@ -311,7 +353,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         assertEquals(uploadedSegments.get("_0.si").getLength(), remoteSegmentStoreDirectory.fileLength("_0.si"));
     }
 
-    public void testFileLenghtNoSuchFile() throws IOException {
+    public void testFileLengthNoSuchFile() throws IOException {
         populateMetadata();
         remoteSegmentStoreDirectory.init();
 
@@ -340,7 +382,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         remoteSegmentStoreDirectory.init();
 
         IndexInput indexInput = mock(IndexInput.class);
-        when(remoteDataDirectory.openInput(startsWith("_0.si"), eq(IOContext.DEFAULT))).thenReturn(indexInput);
+        when(remoteDataDirectory.openInput(startsWith("_0.si"), anyLong(), eq(IOContext.DEFAULT))).thenReturn(indexInput);
 
         assertEquals(indexInput, remoteSegmentStoreDirectory.openInput("_0.si", IOContext.DEFAULT));
     }
@@ -353,7 +395,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         populateMetadata();
         remoteSegmentStoreDirectory.init();
 
-        when(remoteDataDirectory.openInput(startsWith("_0.si"), eq(IOContext.DEFAULT))).thenThrow(new IOException("Error"));
+        when(remoteDataDirectory.openInput(startsWith("_0.si"), anyLong(), eq(IOContext.DEFAULT))).thenThrow(new IOException("Error"));
 
         assertThrows(IOException.class, () -> remoteSegmentStoreDirectory.openInput("_0.si", IOContext.DEFAULT));
     }
@@ -524,7 +566,8 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
             remoteDataDirectory,
             remoteMetadataDirectory,
             mdLockManager,
-            threadPool
+            threadPool,
+            indexShard.shardId()
         );
 
         populateMetadata();
@@ -577,7 +620,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         when(
             remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(
                 RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX,
-                1
+                METADATA_FILES_TO_FETCH
             )
         ).thenReturn(metadataFiles);
 
@@ -623,7 +666,8 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
                 segmentInfos,
                 storeDirectory,
                 34L,
-                indexShard.getLatestReplicationCheckpoint()
+                indexShard.getLatestReplicationCheckpoint(),
+                ""
             )
         );
     }
@@ -641,7 +685,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         when(
             remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(
                 RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX,
-                1
+                METADATA_FILES_TO_FETCH
             )
         ).thenReturn(metadataFiles);
         Map<String, Map<String, String>> metadataFilenameContentMapping = Map.of(
@@ -669,7 +713,8 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
             segInfos,
             storeDirectory,
             generation,
-            indexShard.getLatestReplicationCheckpoint()
+            indexShard.getLatestReplicationCheckpoint(),
+            ""
         );
 
         verify(remoteMetadataDirectory).copyFrom(
@@ -716,7 +761,8 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
                 segmentInfos,
                 storeDirectory,
                 12L,
-                indexShard.getLatestReplicationCheckpoint()
+                indexShard.getLatestReplicationCheckpoint(),
+                ""
             )
         );
         verify(indexOutput).close();
@@ -739,7 +785,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         when(
             remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(
                 RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX,
-                1
+                METADATA_FILES_TO_FETCH
             )
         ).thenReturn(metadataFiles);
 
@@ -762,7 +808,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         when(
             remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(
                 RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX,
-                1
+                METADATA_FILES_TO_FETCH
             )
         ).thenReturn(metadataFiles);
 
@@ -787,7 +833,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         when(
             remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(
                 RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX,
-                1
+                METADATA_FILES_TO_FETCH
             )
         ).thenReturn(metadataFiles);
 
@@ -812,7 +858,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         when(
             remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(
                 RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX,
-                1
+                METADATA_FILES_TO_FETCH
             )
         ).thenReturn(metadataFiles);
 
@@ -837,7 +883,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         when(
             remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(
                 RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX,
-                1
+                METADATA_FILES_TO_FETCH
             )
         ).thenReturn(metadataFiles);
 
@@ -998,17 +1044,21 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
     }
 
     public void testMetadataFileNameOrder() {
-        String file1 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(15, 21, 23, 1, 1);
-        String file2 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(15, 38, 38, 1, 1);
-        String file3 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(18, 12, 26, 1, 1);
-        String file4 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(15, 38, 32, 10, 1);
-        String file5 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(15, 38, 32, 1, 1);
-        String file6 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(15, 38, 32, 5, 1);
+        String file1 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(15, 21, 23, 1, 1, "");
+        String file2 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(15, 38, 38, 1, 1, "");
+        String file3 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(18, 12, 26, 1, 1, "");
+        String file4 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(15, 38, 32, 10, 1, "");
+        String file5 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(15, 38, 32, 1, 1, "");
+        String file6 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(15, 38, 32, 5, 1, "");
 
         List<String> actualList = new ArrayList<>(List.of(file1, file2, file3, file4, file5, file6));
         actualList.sort(String::compareTo);
 
         assertEquals(List.of(file3, file2, file4, file6, file5, file1), actualList);
+
+        long count = file1.chars().filter(ch -> ch == SEPARATOR.charAt(0)).count();
+        // There should not be any `_` in mdFile name as it is used a separator .
+        assertEquals(14, count);
     }
 
     private static class WrapperIndexOutput extends IndexOutput {

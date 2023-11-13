@@ -35,6 +35,7 @@ package org.opensearch.cluster.routing;
 import org.opensearch.Version;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.common.Nullable;
+import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.common.io.stream.Writeable;
@@ -49,15 +50,16 @@ import java.util.Objects;
 
 /**
  * Represents the recovery source of a shard. Available recovery types are:
- *
+ * <p>
  * - {@link EmptyStoreRecoverySource} recovery from an empty store
  * - {@link ExistingStoreRecoverySource} recovery from an existing store
  * - {@link PeerRecoverySource} recovery from a primary on another node
  * - {@link SnapshotRecoverySource} recovery from a snapshot
  * - {@link LocalShardsRecoverySource} recovery from other shards of another index on the same node
  *
- * @opensearch.internal
+ * @opensearch.api
  */
+@PublicApi(since = "1.0.0")
 public abstract class RecoverySource implements Writeable, ToXContentObject {
 
     @Override
@@ -111,8 +113,9 @@ public abstract class RecoverySource implements Writeable, ToXContentObject {
     /**
      * Type of recovery.
      *
-     * @opensearch.internal
+     * @opensearch.api
      */
+    @PublicApi(since = "1.0.0")
     public enum Type {
         EMPTY_STORE,
         EXISTING_STORE,

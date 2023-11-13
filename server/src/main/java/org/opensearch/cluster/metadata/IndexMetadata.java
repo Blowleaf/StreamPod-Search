@@ -44,6 +44,7 @@ import org.opensearch.cluster.block.ClusterBlockLevel;
 import org.opensearch.cluster.node.DiscoveryNodeFilters;
 import org.opensearch.cluster.routing.allocation.IndexMetadataUpdater;
 import org.opensearch.common.Nullable;
+import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.common.collect.MapBuilder;
 import org.opensearch.common.compress.CompressedXContent;
 import org.opensearch.common.settings.Setting;
@@ -450,8 +451,9 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
     /**
      * Blocks the API.
      *
-     * @opensearch.internal
+     * @opensearch.api
      */
+    @PublicApi(since = "1.0.0")
     public enum APIBlock implements Writeable {
         READ_ONLY("read_only", INDEX_READ_ONLY_BLOCK),
         READ("read", INDEX_READ_BLOCK),
@@ -779,7 +781,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
     /**
      * The term of the current selected primary. This is a non-negative number incremented when
      * a primary shard is assigned after a full cluster restart or a replica shard is promoted to a primary.
-     *
+     * <p>
      * Note: since we increment the term every time a shard is assigned, the term for any operational shard (i.e., a shard
      * that can be indexed into) is larger than 0. See {@link IndexMetadataUpdater#applyChanges}.
      **/
@@ -1884,7 +1886,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
 
     /**
      * Return the version the index was created from the provided index settings
-     *
+     * <p>
      * This looks for the presence of the {@link Version} object with key {@link IndexMetadata#SETTING_VERSION_CREATED}
      */
     public static Version indexCreated(final Settings indexSettings) {

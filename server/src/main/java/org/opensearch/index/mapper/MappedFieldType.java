@@ -125,7 +125,7 @@ public abstract class MappedFieldType {
 
     /**
      * Create a helper class to fetch field values during the {@link FetchFieldsPhase}.
-     *
+     * <p>
      * New field types must implement this method in order to support the search 'fields' option. Except
      * for metadata fields, field types should not throw {@link UnsupportedOperationException} since this
      * could cause a search retrieving multiple fields (like "fields": ["*"]) to fail.
@@ -262,6 +262,21 @@ public abstract class MappedFieldType {
         int prefixLength,
         int maxExpansions,
         boolean transpositions,
+        QueryShardContext context
+    ) {
+        throw new IllegalArgumentException(
+            "Can only use fuzzy queries on keyword and text fields - not on [" + name + "] which is of type [" + typeName() + "]"
+        );
+    }
+
+    // Fuzzy Query with re-write method
+    public Query fuzzyQuery(
+        Object value,
+        Fuzziness fuzziness,
+        int prefixLength,
+        int maxExpansions,
+        boolean transpositions,
+        @Nullable MultiTermQuery.RewriteMethod method,
         QueryShardContext context
     ) {
         throw new IllegalArgumentException(
@@ -433,6 +448,15 @@ public abstract class MappedFieldType {
         }
     }
 
+    protected final void failIfNotIndexedAndNoDocValues() {
+        // we fail if a field is both not indexed and does not have doc_values enabled
+        if (isIndexed == false && hasDocValues() == false) {
+            throw new IllegalArgumentException(
+                "Cannot search on field [" + name() + "] since it is both not indexed," + " and does not have doc_values enabled."
+            );
+        }
+    }
+
     public boolean eagerGlobalOrdinals() {
         return eagerGlobalOrdinals;
     }
@@ -487,7 +511,7 @@ public abstract class MappedFieldType {
 
     /**
      * Returns information on how any text in this field is indexed
-     *
+     * <p>
      * Fields that do not support any text-based queries should return
      * {@link TextSearchInfo#NONE}.  Some fields (eg numeric) may support
      * only simple match queries, and can return
